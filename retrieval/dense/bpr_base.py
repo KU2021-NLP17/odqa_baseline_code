@@ -41,8 +41,6 @@ def epoch_time(start_time, end_time):
 
 
 class BprRetrieval(DenseRetrieval):
-    def retrieve(self, query_or_dataset, topk=1):
-        pass
 
     def _exec_embedding(self):
         p_encoder, q_encoder = self._load_model()
@@ -69,12 +67,13 @@ class BprRetrieval(DenseRetrieval):
         p_embedding = []
 
         # passage => phrase
+        # NOTE: need to check
         for passage in tqdm.tqdm(self.contexts):  # wiki
             passage = self.tokenizer( 
                 passage, padding="max_length", truncation=True, max_length=512, return_tensors="pt"
             ).to("cuda")
-            p_emb = p_encoder(**passage).to("cpu").detach().numpy()
-            p_emb = p_encoder.convert_to_binary_code(p_emb)
+            p_emb = p_encoder(**passage)
+            p_emb = p_encoder.convert_to_binary_code(p_emb).to("cpu").detach().numpy()
             p_embedding.append(p_emb)
 
         p_embedding = np.array(p_embedding).squeeze()  # numpy

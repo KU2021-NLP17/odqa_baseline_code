@@ -14,6 +14,7 @@ class DenseRetrieval(Retrieval):
         self.name = args.model.retriever_name
 
         save_dir = p.join(args.path.embed, self.name)
+        self.save_dir = save_dir
 
         if not p.exists(save_dir):
             os.mkdir(save_dir)

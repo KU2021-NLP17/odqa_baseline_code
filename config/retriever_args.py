@@ -37,5 +37,24 @@ class RetrievalTrainingArguments:
         default=1, metadata={"help": "덴스 리트리버에서 사용되는 Gradient Accumulation 스텝입니다."}
     )
 
+    existed_p_dir: Optional[str] = field(
+        default="", metadata={"help": "directory to load the existed passage encoder"}
+    )
+    existed_q_dir: Optional[str] = field(
+        default="", metadata={"help": "directory to load the existed question encoder"}
+    )
+    skip_epochs: Optional[int] = field(
+        default=0, metadata={"help": "number of epochs to skip in training"}
+    )
+    # Params for BPR
+    warmup_ratio: Optional[float] = field(default=0.06, metadata={"help": "warmup ratio for scheduler"})
+    use_ste: Optional[bool] = field(default=True, metadata={"help": "whether to use ste"})
+    projection_dim_size: Optional[int] = field(default=768, metadata={"help": "dimension size of projection"})
+    use_binary_cross_entropy_loss: Optional[bool] = field(
+        default=False, metadata={"help": "whether to use binary cross entropy loss"}
+    )
+    binary_ranking_loss_margin: Optional[int] = field(default=2, metadata={"help": "margin of binary ranking loss"})
+    hashnet_gamma: Optional[float] = field(default=0.1, metadata={"help": "gamma value of hashnet"})
+
     # Parameters for hybrid-retriever
     alpha: Optional[float] = field(default=0.1, metadata={"help": "Set weight for sparse retriever"})

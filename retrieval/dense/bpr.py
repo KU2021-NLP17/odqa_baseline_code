@@ -58,5 +58,5 @@ class BiEncoder(BprRetrieval):
     # Get new encoder to load pretrained encoder
     def _get_encoder(self) -> BiEncoderModel:
         config = BertConfig.from_pretrained(self.backbone)
-        q_encoder = BiEncoderModel(config=config).cuda()
+        q_encoder = BiEncoderModel(config=config, args=self.args).cuda()
         return q_encoder
