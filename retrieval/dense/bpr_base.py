@@ -41,6 +41,32 @@ def epoch_time(start_time, end_time):
 
 
 class BprRetrieval(DenseRetrieval):
+    def get_relevant_doc_bulk(self, queries, topk=1):
+        self.encoder.eval()  # question encoder
+        self.encoder.cuda()
+
+        with torch.no_grad():
+            q_seqs_val = self.tokenizer(
+                queries, padding="longest", truncation=True, max_length=512, return_tensors="pt"
+            ).to("cuda")
+            q_embedding = self.encoder(**q_seqs_val)
+            q_embedding.squeeze_()  # in-place
+            bin_q_embedding = self.encoder.convert_to_binary_code(q_embedding).cpu().detach().numpy()
+            q_emb = q_embedding.cpu().detach().numpy()            
+
+        # p_embedding: numpy, q_embedding: numpy
+        dim_size = self.p_embedding.shape[1]
+        self.p_embedding = np.unpackbits(self.p_embedding).reshape(-1, dim_size * 8).astype(np.float32)
+        self.p_embedding = self.p_embedding * 2                                                                                                                                                                                                                                                                                      - 1
+        import pdb; pdb.set_trace()
+        result = np.matmul(bin_q_embedding, self.p_embedding.T)
+        doc_indices = np.argsort(result, axis=1)[:, -topk:][:, ::-1]
+        doc_scores = []
+
+        for i in range(len(doc_indices)):
+            doc_scores.append(result[i][[doc_indices[i].tolist()]])
+
+        return doc_scores, doc_indices
 
     def _exec_embedding(self):
         p_encoder, q_encoder = self._load_model()
@@ -74,6 +100,8 @@ class BprRetrieval(DenseRetrieval):
             ).to("cuda")
             p_emb = p_encoder(**passage)
             p_emb = p_encoder.convert_to_binary_code(p_emb).to("cpu").detach().numpy()
+            p_emb = np.where(p_emb == -1, 0, p_emb).astype(np.bool)
+            p_emb = np.packbits(p_emb).reshape(p_emb.shape[0], -1)
             p_embedding.append(p_emb)
 
         p_embedding = np.array(p_embedding).squeeze()  # numpy
