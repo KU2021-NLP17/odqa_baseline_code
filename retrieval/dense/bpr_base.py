@@ -57,7 +57,7 @@ class BprRetrieval(DenseRetrieval):
         # p_embedding: numpy, q_embedding: numpy
         dim_size = self.p_embedding.shape[1]
         self.p_embedding = np.unpackbits(self.p_embedding).reshape(-1, dim_size * 8).astype(np.float32)
-        self.p_embedding = self.p_embedding * 2
+        self.p_embedding = self.p_embedding * 2 - 1                                                                                                                                                                                                                                                                            - 1
         result = np.matmul(bin_q_embedding, self.p_embedding.T)
         doc_indices = np.argsort(result, axis=1)[:, -topk:][:, ::-1]
         doc_scores = []
