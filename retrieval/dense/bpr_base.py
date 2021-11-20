@@ -1,5 +1,5 @@
 import tqdm
-import time, os
+import time, os, pickle
 import os.path as p
 from itertools import chain
 
@@ -42,12 +42,29 @@ def epoch_time(start_time, end_time):
 
 
 class BprRetrieval(DenseRetrieval):
+    def get_embedding(self):
+        if p.isfile(self.embed_path) and p.isfile(self.encoder_path) and not self.args.retriever.retrain:
+            with open(self.embed_path, "rb") as f:
+                self.p_embedding = pickle.load(f)
+
+            emb_size = self.p_embedding.shape[1]
+            self.p_embedding = np.unpackbits(self.p_embedding).reshape(-1, emb_size * 8).astype(np.float32)
+            self.p_embedding= self.p_embedding * 2 - 1  
+
+            self.encoder = self._get_encoder()
+            self.encoder.load_state_dict(torch.load(self.encoder_path))
+        else:
+            self.p_embedding, self.encoder = self._exec_embedding()
+
+            with open(self.embed_path, "wb") as f:
+                pickle.dump(self.p_embedding, f)
+
+            torch.save(self.encoder.state_dict(), self.encoder_path)
+
     def get_relevant_doc_bulk(self, queries, topk=1):
         self.encoder.eval()  # question encoder
         self.encoder.cuda()
 
-        rerank=True
-        
         with torch.no_grad():
             q_seqs_val = self.tokenizer(
                 queries, padding="longest", truncation=True, max_length=512, return_tensors="pt"
@@ -57,39 +74,43 @@ class BprRetrieval(DenseRetrieval):
             bin_q_emb = self.encoder.convert_to_binary_code(q_embedding).cpu().detach().numpy()
             q_emb = q_embedding.cpu().detach().numpy()        
 
-        # p_embedding: numpy, q_embedding: numpy
-        num_queries=q_emb.shape[0]
-        emb_size = self.p_embedding.shape[1]
-        self.p_embedding = np.unpackbits(self.p_embedding).reshape(-1, emb_size * 8).astype(np.float32)
-        self.p_embedding= self.p_embedding* 2 - 1     
-        
-        doc_scores = []
+        doc_scores, doc_indices = [], []
 
-        if not rerank:
-            result= np.matmul(bin_q_emb, self.p_embedding.T)    
+        num_queries = q_emb.shape[0] #
+        result = np.matmul(bin_q_emb, self.p_embedding.T)    
+        
+        if not self.args.retriever.rerank:
             doc_indices = np.argsort(result, axis=1)[:, -topk:][:, ::-1]
             for i in range(num_queries):
                 doc_scores.append(result[i][[doc_indices[i].tolist()]])
             return doc_scores, doc_indices
 
-        doc_indices=[]
-        binary_k=min(1000, num_queries)
-
         # 1. Generate binary_k candidates by comparing hq with hp
-        binary_result=np.matmul(bin_q_emb, self.p_embedding.T)
-        cand_indices=np.argsort(binary_result, axis=1)[:, -binary_k:][:, ::-1]
+        binary_k = min(1000, num_queries)
+        cand_indices = np.argsort(result, axis=1)[:, -binary_k:][:, ::-1]
 
         # 2. Choose top k from the candidates by comparing eq with hp
-        for queries in range(num_queries):
-            cand_p_emb=self.p_embedding[cand_indices[queries]]
-            nth_q_emb=q_emb[queries]
-            score=np.dot(cand_p_emb,nth_q_emb)
-            tmp_index=np.argsort(-score)[:topk]
-            doc_scores.append(score[tmp_index])
-            topk_index=cand_indices[queries][tmp_index]
-            doc_indices.append(topk_index)
+        cand_p_emb = self.p_embedding[cand_indices] # camd_p_emb.shape = [num_quires, binary_k, embedding_size] 
+        scores = np.einsum("ijk,ik->ij", cand_p_emb, q_emb) # [num_quires, binary_k, embedding_size] @ [num_queries, embedding_size, 1] = [num_queries, binary_k, 1]
+        sorted_indices = np.argsort(-scores) # [num_queries, topk]
+        doc_scores = scores[np.arange(num_queries)[:, None], sorted_indices][:, :topk] # [num_queries, topk]
+        doc_indices = cand_indices[np.arange(num_queries)[:, None], sorted_indices][:, :topk] # [num_queries, topk]
         
-        doc_indices=np.array(doc_indices)
+        # print(doc_scores2.shape, doc_indices2.shape)
+
+        # for queries in range(num_queries):
+        #     cand_p_emb = self.p_embedding[cand_indices[queries]] # [binary_k, embedding_size]
+        #     nth_q_emb = q_emb[queries]
+        #     score = np.dot(cand_p_emb, nth_q_emb)
+        #     tmp_index = np.argsort(-score)[:topk]
+        #     doc_scores.append(score[tmp_index])
+        #     topk_index = cand_indices[queries][tmp_index]
+        #     doc_indices.append(topk_index)
+        
+        # doc_indices = np.array(doc_indices)
+        
+        # import pdb; pdb.set_trace()
+        # print(doc_scores.shape, doc_indices.shape)
 
         return doc_scores, doc_indices
 
