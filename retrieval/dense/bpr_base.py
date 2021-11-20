@@ -10,6 +10,7 @@ from datasets import load_from_disk, load_dataset
 from transformers import TrainingArguments
 from transformers import AdamW, get_linear_schedule_with_warmup
 from torch.utils.data import TensorDataset, DataLoader, RandomSampler
+from transformers.utils.dummy_flax_objects import FLAX_MODEL_FOR_QUESTION_ANSWERING_MAPPING
 
 from retrieval.dense import DenseRetrieval
 
@@ -45,25 +46,50 @@ class BprRetrieval(DenseRetrieval):
         self.encoder.eval()  # question encoder
         self.encoder.cuda()
 
+        rerank=True
+        
         with torch.no_grad():
             q_seqs_val = self.tokenizer(
                 queries, padding="longest", truncation=True, max_length=512, return_tensors="pt"
             ).to("cuda")
             q_embedding = self.encoder(**q_seqs_val)
             q_embedding.squeeze_()  # in-place
-            bin_q_embedding = self.encoder.convert_to_binary_code(q_embedding).cpu().detach().numpy()
-            q_emb = q_embedding.cpu().detach().numpy()            
+            bin_q_emb = self.encoder.convert_to_binary_code(q_embedding).cpu().detach().numpy()
+            q_emb = q_embedding.cpu().detach().numpy()        
 
         # p_embedding: numpy, q_embedding: numpy
-        dim_size = self.p_embedding.shape[1]
-        self.p_embedding = np.unpackbits(self.p_embedding).reshape(-1, dim_size * 8).astype(np.float32)
-        self.p_embedding = self.p_embedding * 2 - 1                                                                                                                                                                                                                                                                            - 1
-        result = np.matmul(bin_q_embedding, self.p_embedding.T)
-        doc_indices = np.argsort(result, axis=1)[:, -topk:][:, ::-1]
+        num_queries=q_emb.shape[0]
+        emb_size = self.p_embedding.shape[1]
+        self.p_embedding = np.unpackbits(self.p_embedding).reshape(-1, emb_size * 8).astype(np.float32)
+        self.p_embedding= self.p_embedding* 2 - 1     
+        
         doc_scores = []
 
-        for i in range(len(doc_indices)):
-            doc_scores.append(result[i][[doc_indices[i].tolist()]])
+        if not rerank:
+            result= np.matmul(bin_q_emb, self.p_embedding.T)    
+            doc_indices = np.argsort(result, axis=1)[:, -topk:][:, ::-1]
+            for i in range(num_queries):
+                doc_scores.append(result[i][[doc_indices[i].tolist()]])
+            return doc_scores, doc_indices
+
+        doc_indices=[]
+        binary_k=min(1000, num_queries)
+
+        # 1. Generate binary_k candidates by comparing hq with hp
+        binary_result=np.matmul(bin_q_emb, self.p_embedding.T)
+        cand_indices=np.argsort(binary_result, axis=1)[:, -binary_k:][:, ::-1]
+
+        # 2. Choose top k from the candidates by comparing eq with hp
+        for queries in range(num_queries):
+            cand_p_emb=self.p_embedding[cand_indices[queries]]
+            nth_q_emb=q_emb[queries]
+            score=np.dot(cand_p_emb,nth_q_emb)
+            tmp_index=np.argsort(-score)[:topk]
+            doc_scores.append(score[tmp_index])
+            topk_index=cand_indices[queries][tmp_index]
+            doc_indices.append(topk_index)
+        
+        doc_indices=np.array(doc_indices)
 
         return doc_scores, doc_indices
 
