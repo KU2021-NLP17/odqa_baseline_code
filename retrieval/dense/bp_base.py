@@ -93,13 +93,13 @@ class BPRetrieval(DenseRetrieval):
         if not self.args.retriever.rerank:
             phrase_indices = np.argsort(result, axis=1)[:, -topk * 4:][:, ::-1]
 
-            for row in phrase_indices:
+            for row in range(len(phrase_indices)):
                 tmp_indices, tmp_scores = [], []
-                for col in row:
-                    if self.mappings[col] in tmp_indices: # remove duplicate
+                for col in range(len(phrase_indices[row])):
+                    if self.mappings[phrase_indices[row][col]] in tmp_indices: # remove duplicate
                         continue
                     
-                    tmp_indices.append(self.mappings[col])
+                    tmp_indices.append(self.mappings[phrase_indices[row][col]])
                     tmp_scores.append(result[row][col])
 
                     if len(tmp_indices) > topk: # only top_k is needed
@@ -109,6 +109,7 @@ class BPRetrieval(DenseRetrieval):
                 doc_scores.append(tmp_scores)
             
             return doc_scores, doc_indices
+
 
         # 1. Generate binary_k candidates by comparing hq with hp
         binary_k = self.args.retriever.binary_k
