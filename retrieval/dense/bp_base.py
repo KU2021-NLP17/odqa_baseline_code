@@ -44,7 +44,69 @@ class BPRetrieval(DenseRetrieval):
         pass
     
     def get_relevant_doc_bulk(self, queries, topk=1):
-        pass 
+        self.encoder.eval()  # question encoder
+        self.encoder.cuda()
+
+        with torch.no_grad():
+            q_seqs_val = self.tokenizer(
+                queries, padding="longest", truncation=True, max_length=512, return_tensors="pt"
+            ).to("cuda")
+            q_embedding = self.encoder(**q_seqs_val)
+            q_embedding.squeeze_()  # in-place
+            q_embedding = q_embedding.cpu().detach().numpy()
+            bin_q_emb = self.encoder.convert_to_binary_code(q_embedding).cpu().detach().numpy()
+            q_emb = q_embedding.cpu().detach().numpy() 
+
+        num_queries = q_emb.shape[0] #
+        result = np.matmul(bin_q_emb, self.p_embedding.T)   
+
+        doc_indices, doc_scores = [], []
+
+        if not self.args.retriever.rerank:
+            phrase_indices = np.argsort(result, axis=1)[:, -topk * 4:][:, ::-1]
+
+            for row in phrase_indices:
+                tmp_indices, tmp_scores = [], []
+                for col in row:
+                    if self.mappings[col] in tmp_indices: # remove duplicate
+                        continue
+                    
+                    tmp_indices.append(self.mappings[col])
+                    tmp_scores.append(result[row][col])
+
+                    if len(tmp_indices) > topk: # only top_k is needed
+                        break
+
+                doc_indices.append(tmp_indices)
+                doc_scores.append(tmp_scores)
+            
+            return doc_scores, doc_indices
+
+        # 1. Generate binary_k candidates by comparing hq with hp
+        binary_k = args.retriever.binary_k
+        cand_indices = np.argsort(result, axis=1)[:, -binary_k:][:, ::-1]
+
+        # 2. Choose top k from the candidates by comparing eq with hp
+        cand_p_emb = self.p_embedding[cand_indices] # camd_p_emb.shape = [num_quires, binary_k, embedding_size] 
+        scores = np.einsum("ijk,ik->ij", cand_p_emb, q_emb) # [num_quires, binary_k, embedding_size] @ [num_queries, embedding_size, 1] = [num_queries, binary_k, 1]
+        sorted_indices = np.argsort(-scores) # [num_queries, topk]
+
+        for row in range(len(num_queries)):
+            tmp_indices, tmp_scores = [], []
+            for col in sorted_indices.flatten():
+                if self.mappings[cand_indices[row][col]] in tmp_indices: # remove duplicate
+                    continue
+                
+                tmp_indices.append(self.mappings[cand_indices[row][col]])
+                tmp_scores.append(scores[row][col])
+
+                if len(tmp_indices) > topk: # only top_k is needed
+                    break
+
+            doc_indices.append(tmp_indices)
+            doc_scores.append(tmp_scores)
+
+        return doc_scores, doc_indices
 
     def _exec_embedding(self):
         p_encoder, q_encoder = self._load_model()
