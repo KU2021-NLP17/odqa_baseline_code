@@ -1,5 +1,6 @@
-import tqdm
+from tqdm.auto import tqdm, trange
 import pickle
+import random
 import time
 import os.path as p
 from itertools import chain
@@ -42,7 +43,8 @@ class DpRetrieval(DenseRetrieval):
     def __init__(self, args):
         super().__init__(args)  # wiki context load
         self.mappings = []
-        self.window_size = 32
+        self.window_size = 20
+        self.sample_per_phrase = 4
 
         save_dir = p.join(args.path.embed, self.name)
         self.mappings_path = p.join(save_dir, "mappings.bin")
@@ -111,7 +113,7 @@ class DpRetrieval(DenseRetrieval):
         p_embedding = []
         mappings = []
 
-        for idx, passage in enumerate(tqdm.tqdm(self.contexts)):  # wiki
+        for idx, passage in enumerate(tqdm(self.contexts)):  # wiki
             splitted = passage.split()
             for i in range(len(splitted) // self.window_size * 2):
                 phrase = ' '.join(splitted[i*(self.window_size // 2):(i+2)*(self.window_size //2)])
@@ -130,29 +132,50 @@ class DPTrainMixin:
         datasets = get_retriever_dataset(self.args)
 
         train_dataset = datasets["train"]
-        
+
+        # TODO delete
+        # train_dataset = train_dataset.select(range(100))
+
+        # with negative examples
         questions = []
         phrases = []
+        labels = []
         
-        for idx, passage in enumerate(train_dataset["context"]):
-            question = train_dataset["question"][idx]
-            splitted = passage.split()
-            
-            in_passage_phrase = [' '.join(splitted[i*(self.window_size // 2):(i+2)*(self.window_size //2)]) for i in range(len(splitted) // self.window_size * 2)]
-            in_passage_question = [question] * len(in_passage_phrase)
-            questions.extend(in_passage_question)
-            phrases.extend(in_passage_phrase)
-            if idx % 1000 == 0: 
-                print(f'Dataset {idx} completed')
-            
+        for idx, question in enumerate(tqdm(train_dataset["question"])):
+            answer_passage = train_dataset["context"][idx]
+            splitted = answer_passage.split()
+
+            for phrase_idx in range(len(splitted) // self.window_size * 2):
+                phrase = ' '.join(splitted[phrase_idx*(self.window_size // 2):(phrase_idx+2)*(self.window_size //2)])
+
+                while True:
+                    incorrect_passage = random.choice(train_dataset["context"])
+                    incorrect_passage_splitted = incorrect_passage.split()
+                    if len(incorrect_passage_splitted) // self.window_size >= self.sample_per_phrase:
+                        break
+
+                incorrect_phrase_indices = random.sample(range(0, len(incorrect_passage_splitted) // self.window_size), self.sample_per_phrase - 1)
+                incorrect_phrases = [' '.join(incorrect_passage_splitted[i*(self.window_size // 2):(i+2)*(self.window_size //2)]) for i in incorrect_phrase_indices]
+                
+                incorrect_phrases.insert(phrase_idx % self.sample_per_phrase, phrase)
+
+                questions.append(question)
+                phrases.append(incorrect_phrases)
+                labels.append(phrase_idx % self.sample_per_phrase)
+        
         print('Dataset prepare success')
-        
+        print(f'Length : {len(questions)}')
+
         q_seqs = self.tokenizer(
             questions, padding="longest", truncation=True, max_length=512, return_tensors="pt"
         )
         p_seqs = self.tokenizer(
-            phrases, padding="max_length", truncation=True, max_length=self.window_size, return_tensors="pt"
+            list(chain(*phrases)), padding="max_length", truncation=True, max_length=self.window_size, return_tensors="pt"
         )
+
+        embedding_size = p_seqs["input_ids"].shape[-1]
+        for k in p_seqs.keys():
+            p_seqs[k] = p_seqs[k].reshape(-1, self.sample_per_phrase, embedding_size)
         
         train_dataset = TensorDataset(
             p_seqs["input_ids"],
@@ -161,7 +184,9 @@ class DPTrainMixin:
             q_seqs["input_ids"],
             q_seqs["attention_mask"],
             q_seqs["token_type_ids"],
+            torch.tensor(labels)
         )
+
         eval_dataset = None
         
         return train_dataset, eval_dataset
@@ -205,23 +230,43 @@ class DPTrainMixin:
 
                 if torch.cuda.is_available():
                     batch = tuple(t.cuda() for t in batch)
+                
+                embedding_size = batch[0].shape[-1]
+                p_inputs = {
+                    "input_ids": batch[0].reshape(-1, embedding_size), 
+                    "attention_mask": batch[1].reshape(-1, embedding_size), 
+                    "token_type_ids": batch[2].reshape(-1, embedding_size)
+                }
 
-                p_inputs = {"input_ids": batch[0], "attention_mask": batch[1], "token_type_ids": batch[2]}
-                q_inputs = {"input_ids": batch[3], "attention_mask": batch[4], "token_type_ids": batch[5]}
+                q_inputs = {
+                    "input_ids": batch[3], 
+                    "attention_mask": batch[4], 
+                    "token_type_ids": batch[5]
+                }
+                adder = torch.arange(0, training_args.per_device_train_batch_size).long() * self.sample_per_phrase
+                if torch.cuda.is_available():
+                    adder = adder.to("cuda")
+                label = torch.repeat_interleave(batch[6] + adder, self.sample_per_phrase)
 
                 p_outputs = p_model(**p_inputs)
                 q_outputs = q_model(**q_inputs)
+                
+                q_outputs = torch.repeat_interleave(q_outputs, self.sample_per_phrase, dim=0)
 
                 sim_scores = torch.matmul(q_outputs, torch.transpose(p_outputs, 0, 1))
-                targets = torch.arange(0, training_args.per_device_train_batch_size).long()
-
-                if torch.cuda.is_available():
-                    targets = targets.to("cuda")
 
                 sim_scores = F.log_softmax(sim_scores, dim=1)
-                loss = F.nll_loss(sim_scores, targets)
+                loss = F.nll_loss(sim_scores, label)
 
                 loss = loss / training_args.gradient_accumulation_steps
+                
+#                 print(p_inputs["input_ids"].shape)
+#                 print(q_inputs["input_ids"].shape)
+#                 print(p_outputs.shape)
+#                 print(q_outputs.shape)
+                
+#                 print(label.shape)
+#                 print(label)
 
                 print(f"epoch: {epoch + 1:02} step: {step:02} loss: {loss}", end="\r")
                 train_loss += loss.item()
@@ -243,50 +288,6 @@ class DPTrainMixin:
 
             print(f"Epoch: {epoch + 1:02} | Time: {epoch_mins}m {epoch_secs}s")
             print(f"\tTrain Loss: {train_loss / len(train_dataloader):.4f}")
-
-            if eval_dataset:
-                eval_loss = 0
-                correct = 0
-                total = 0
-
-                p_model.eval()
-                q_model.eval()
-
-                with torch.no_grad():
-                    for idx, batch in enumerate(eval_dataloader):
-                        if torch.cuda.is_available():
-                            batch = tuple(t.cuda() for t in batch)
-
-                        p_inputs = {"input_ids": batch[0], "attention_mask": batch[1], "token_type_ids": batch[2]}
-                        q_inputs = {"input_ids": batch[3], "attention_mask": batch[4], "token_type_ids": batch[5]}
-
-                        p_outputs = p_model(**p_inputs)
-                        q_outputs = q_model(**q_inputs)
-
-                        sim_scores = torch.matmul(q_outputs, torch.transpose(p_outputs, 0, 1))
-                        targets = torch.arange(0, training_args.per_device_eval_batch_size).long()
-
-                        if torch.cuda.is_available():
-                            targets = targets.to("cuda")
-
-                        sim_scores = F.log_softmax(sim_scores, dim=1)
-
-                        loss = F.nll_loss(sim_scores, targets)
-
-                        loss = loss / training_args.gradient_accumulation_steps
-
-                        predicts = np.argmax(sim_scores.cpu(), axis=1)
-
-                        for idx, predict in enumerate(predicts):
-                            total += 1
-                            if predict == idx:
-                                correct += 1
-
-                        eval_loss += loss.item()
-
-                    print(
-                        f"Epoch: {epoch + 1:02}\tEval Loss: {eval_loss / len(eval_dataloader):.4f}\tAccuracy: {correct/total:.4f}"
-                    )
 
             p_model.train()
             q_model.train()
