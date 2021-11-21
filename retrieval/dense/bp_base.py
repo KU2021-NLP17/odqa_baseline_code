@@ -72,14 +72,178 @@ class BPRetrieval(DenseRetrieval):
             torch.save(self.encoder.state_dict(), self.encoder_path)
 
     def get_relevant_doc_bulk(self, queries, topk=1):
-        pass 
+        self.encoder.eval()  # question encoder
+        self.encoder.cuda()
+
+        with torch.no_grad():
+            q_seqs_val = self.tokenizer(
+                queries, padding="longest", truncation=True, max_length=512, return_tensors="pt"
+            ).to("cuda")
+            q_embedding = self.encoder(**q_seqs_val)
+            q_embedding.squeeze_()  # in-place
+            q_embedding = q_embedding.cpu().detach().numpy()
+            bin_q_emb = self.encoder.convert_to_binary_code(q_embedding).cpu().detach().numpy()
+            q_emb = q_embedding.cpu().detach().numpy() 
+
+        num_queries = q_emb.shape[0] #
+        result = np.matmul(bin_q_emb, self.p_embedding.T)   
+
+        doc_indices, doc_scores = [], []
+
+        if not self.args.retriever.rerank:
+            phrase_indices = np.argsort(result, axis=1)[:, -topk * 4:][:, ::-1]
+
+            for row in phrase_indices:
+                tmp_indices, tmp_scores = [], []
+                for col in row:
+                    if self.mappings[col] in tmp_indices: # remove duplicate
+                        continue
+                    
+                    tmp_indices.append(self.mappings[col])
+                    tmp_scores.append(result[row][col])
+
+                    if len(tmp_indices) > topk: # only top_k is needed
+                        break
+
+                doc_indices.append(tmp_indices)
+                doc_scores.append(tmp_scores)
+            
+            return doc_scores, doc_indices
+
+        # 1. Generate binary_k candidates by comparing hq with hp
+        binary_k = args.retriever.binary_k
+        cand_indices = np.argsort(result, axis=1)[:, -binary_k:][:, ::-1]
+
+        # 2. Choose top k from the candidates by comparing eq with hp
+        cand_p_emb = self.p_embedding[cand_indices] # camd_p_emb.shape = [num_quires, binary_k, embedding_size] 
+        scores = np.einsum("ijk,ik->ij", cand_p_emb, q_emb) # [num_quires, binary_k, embedding_size] @ [num_queries, embedding_size, 1] = [num_queries, binary_k, 1]
+        sorted_indices = np.argsort(-scores) # [num_queries, topk]
+
+        for row in range(len(num_queries)):
+            tmp_indices, tmp_scores = [], []
+            for col in sorted_indices.flatten():
+                if self.mappings[cand_indices[row][col]] in tmp_indices: # remove duplicate
+                    continue
+                
+                tmp_indices.append(self.mappings[cand_indices[row][col]])
+                tmp_scores.append(scores[row][col])
+
+                if len(tmp_indices) > topk: # only top_k is needed
+                    break
+
+            doc_indices.append(tmp_indices)
+            doc_scores.append(tmp_scores)
+
+        return doc_scores, doc_indices
 
     def _exec_embedding(self):
-        pass
+        p_encoder, q_encoder = self._load_model()
+
+        train_dataset, eval_dataset = self._load_dataset(eval=True)
+
+        args = TrainingArguments(
+            output_dir="binaryphrase_retrieval",
+            evaluation_strategy="epoch",
+            learning_rate=self.args.retriever.learning_rate,
+            per_device_train_batch_size=self.args.retriever.per_device_train_batch_size,
+            per_device_eval_batch_size=self.args.retriever.per_device_eval_batch_size,
+            num_train_epochs=self.args.retriever.num_train_epochs,
+            weight_decay=self.args.retriever.weight_decay,
+            gradient_accumulation_steps=self.args.retriever.gradient_accumulation_steps,
+            warmup_ratio=self.args.retriever.warmup_ratio,
+        )
+
+        existed_p_dir = self.args.retriever.existed_p_dir
+        existed_q_dir = self.args.retriever.existed_q_dir
+        skip_epochs = self.args.retriever.skip_epochs
+
+        p_encoder, q_encoder = self._train(
+            args, train_dataset, p_encoder, q_encoder, eval_dataset,  existed_p_dir, existed_q_dir, skip_epochs
+            )
+        p_embedding = []
+        mappings = []
+
+        for idx, passage in enumerate(tqdm(self.contexts)):  # wiki
+            splitted = passage.split()
+            for i in range(len(splitted) // self.window_size * 2):
+                phrase = ' '.join(splitted[i*(self.window_size // 2):(i+2)*(self.window_size //2)])
+                phrase = self.tokenizer(
+                    phrase, padding="max_length", truncation=True, max_length=self.window_size, return_tensors="pt"
+                ).to("cuda")
+                p_emb = p_encoder(**phrase)
+                p_emb = p_encoder.convert_to_binary_code(p_emb).to("cpu").detach().numpy()
+                p_emb = np.where(p_emb == -1, 0, p_emb).astype(np.bool)
+                p_emb = np.packbits(p_emb).reshape(p_emb.shape[0], -1)
+                p_embedding.append(p_emb)
+                mappings.append(idx)
+
+        p_embedding = np.array(p_embedding).squeeze()  # numpy
+        return p_embedding, q_encoder, mappings
+
 
     def _load_dataset(self, eval=False):
-        pass
-    
+        datasets = get_retriever_dataset(self.args)
+
+        train_dataset = datasets["train"]
+
+        # TODO delete
+        # train_dataset = train_dataset.select(range(100))
+
+        # with negative examples
+        questions = []
+        phrases = []
+        labels = []
+        
+        for idx, question in enumerate(tqdm(train_dataset["question"])):
+            answer_passage = train_dataset["context"][idx]
+            splitted = answer_passage.split()
+
+            for phrase_idx in range(len(splitted) // self.window_size * 2):
+                phrase = ' '.join(splitted[phrase_idx*(self.window_size // 2):(phrase_idx+2)*(self.window_size //2)])
+
+                while True:
+                    incorrect_passage = random.choice(train_dataset["context"])
+                    incorrect_passage_splitted = incorrect_passage.split()
+                    if len(incorrect_passage_splitted) // self.window_size >= self.sample_per_phrase:
+                        break
+
+                incorrect_phrase_indices = random.sample(range(0, len(incorrect_passage_splitted) // self.window_size), self.sample_per_phrase - 1)
+                incorrect_phrases = [' '.join(incorrect_passage_splitted[i*(self.window_size // 2):(i+2)*(self.window_size //2)]) for i in incorrect_phrase_indices]
+                
+                incorrect_phrases.insert(phrase_idx % self.sample_per_phrase, phrase)
+
+                questions.append(question)
+                phrases.append(incorrect_phrases)
+                labels.append(phrase_idx % self.sample_per_phrase)
+        
+        print('The dataset is loaded successfully.')
+        print(f'Length : {len(questions)}')
+
+        q_seqs = self.tokenizer(
+            questions, padding="longest", truncation=True, max_length=512, return_tensors="pt"
+        )
+        p_seqs = self.tokenizer(
+            list(chain(*phrases)), padding="max_length", truncation=True, max_length=self.window_size, return_tensors="pt"
+        )
+
+        embedding_size = p_seqs["input_ids"].shape[-1]
+        for k in p_seqs.keys():
+            p_seqs[k] = p_seqs[k].reshape(-1, self.sample_per_phrase, embedding_size)
+        
+        train_dataset = TensorDataset(
+            p_seqs["input_ids"],
+            p_seqs["attention_mask"],
+            p_seqs["token_type_ids"],
+            q_seqs["input_ids"],
+            q_seqs["attention_mask"],
+            q_seqs["token_type_ids"],
+            torch.tensor(labels)
+        )
+
+        eval_dataset = None
+        
+        return train_dataset, eval_dataset
+
     def _train(self, training_args, train_dataset, p_model, q_model, eval_dataset, existed_p_dir, existed_q_dir, skip_epochs=0):
         print("TRAINING Binary Phrases Retriever")
         train_sampler = RandomSampler(train_dataset)

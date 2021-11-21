@@ -56,6 +56,7 @@ class RetrievalTrainingArguments:
     binary_ranking_loss_margin: Optional[int] = field(default=2, metadata={"help": "margin of binary ranking loss"})
     hashnet_gamma: Optional[float] = field(default=0.1, metadata={"help": "gamma value of hashnet"})
     rerank: Optional[bool] = field(default=True, metadata={"help": "Use reranking process"})
+    binary_k: Optional[int] = field(default=4000, metadata={"help": "Candidate number when BPR"})
 
     # Parameters for hybrid-retriever
     alpha: Optional[float] = field(default=0.1, metadata={"help": "Set weight for sparse retriever"})
