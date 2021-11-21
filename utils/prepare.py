@@ -1,4 +1,5 @@
 import os.path as p
+from retrieval.dense.bp import BPBert
 
 from transformers import AutoConfig, AutoModel, AutoTokenizer
 from datasets import load_from_disk, load_dataset, concatenate_datasets, Dataset
@@ -13,7 +14,7 @@ from retrieval.sparse import (
     ATIREBM25Retrieval,
     BM25EnsembleRetrieval,
 )
-from retrieval.dense import DprBert, DpBert, BaseTrainMixin, Bm25TrainMixin, DPTrainMixin, ColBert, DprElectra, BiEncoder
+from retrieval.dense import DprBert, DpBert, BaseTrainMixin, Bm25TrainMixin, DPTrainMixin, ColBert, DprElectra, BiEncoder, BPBert
 
 
 RETRIEVER = {
@@ -29,6 +30,7 @@ RETRIEVER = {
     "DensePhrase": DpBert,
     "BPR": BiEncoder,
     "DPRELECTRA": DprElectra,
+    "BinaryPhrase": BPBert,
     # Hybrid
     "TFIDF_DPRBERT": TfidfDprBert,
     "ATIREBM25_DPRBERT": AtireBm25DprBert,

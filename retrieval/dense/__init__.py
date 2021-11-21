@@ -7,3 +7,5 @@ from retrieval.dense.bpr_base import BprRetrieval
 from retrieval.dense.bpr import BiEncoder
 from retrieval.dense.colbert import ColBert
 from retrieval.dense.dpr_electra import DprElectra
+from retrieval.dense.bp_base import BPRetrieval
+from retrieval.dense.bp import BPBert
