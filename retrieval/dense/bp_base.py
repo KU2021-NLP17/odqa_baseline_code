@@ -111,7 +111,7 @@ class BPRetrieval(DenseRetrieval):
             return doc_scores, doc_indices
 
         # 1. Generate binary_k candidates by comparing hq with hp
-        binary_k = args.retriever.binary_k
+        binary_k = self.args.retriever.binary_k
         cand_indices = np.argsort(result, axis=1)[:, -binary_k:][:, ::-1]
 
         # 2. Choose top k from the candidates by comparing eq with hp
