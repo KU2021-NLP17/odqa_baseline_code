@@ -247,10 +247,6 @@ class BPRetrieval(DenseRetrieval):
 
         # Save trian dataset 
         try:
-            dataset_save_dir = p.join(self.save_dir, f"{time.ctime()}")
-            if not p.exists(dataset_save_dir):
-                os.mkdir(dataset_save_dir)
-
             with open(p.join(self.save_dir, "train_dataset.bin"), "wb") as f:
                 pickle.dump(train_dataset, f)
             print("Saved train dataset successfully")
@@ -292,6 +288,7 @@ class BPRetrieval(DenseRetrieval):
             scheduler.load_state_dict(checkpoint['scheduler'])
             global_step = checkpoint['global_step']
             start_epoch = checkpoint['epoch'] + 1
+            print("Loaded the checkpoint successfully!")
 
         p_model.train()
         q_model.train()
@@ -385,7 +382,7 @@ class BPRetrieval(DenseRetrieval):
             end_time = time.time()
             epoch_mins, epoch_secs = epoch_time(start_time, end_time)
 
-            print(f"Epoch: {epoch + 1:02} | Time: {epoch_mins}m {epoch_secs}s")
+            print(f"\nEpoch: {epoch + 1:02} | Time: {epoch_mins}m {epoch_secs}s")
             print(f"\tTrain Loss: {train_loss / len(train_dataloader):.4f}")
 
             # Save passsage and query encoder
