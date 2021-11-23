@@ -93,7 +93,7 @@ class BPRetrieval(DenseRetrieval):
         if not self.args.retriever.rerank:
             phrase_indices = np.argsort(result, axis=1)[:, -topk * 4:][:, ::-1]
 
-            for row in range(len(phrase_indices)):
+            for row in range(phrase_indices):
                 tmp_indices, tmp_scores = [], []
                 for col in range(len(phrase_indices[row])):
                     if self.mappings[phrase_indices[row][col]] in tmp_indices: # remove duplicate
@@ -110,7 +110,6 @@ class BPRetrieval(DenseRetrieval):
             
             return doc_scores, doc_indices
 
-
         # 1. Generate binary_k candidates by comparing hq with hp
         binary_k = self.args.retriever.binary_k
         cand_indices = np.argsort(result, axis=1)[:, -binary_k:][:, ::-1]
@@ -120,7 +119,7 @@ class BPRetrieval(DenseRetrieval):
         scores = np.einsum("ijk,ik->ij", cand_p_emb, q_emb) # [num_quires, binary_k, embedding_size] @ [num_queries, embedding_size, 1] = [num_queries, binary_k, 1]
         sorted_indices = np.argsort(-scores) # [num_queries, topk]
 
-        for row in range(len(num_queries)):
+        for row in range(num_queries):
             tmp_indices, tmp_scores = [], []
             for col in sorted_indices.flatten():
                 if self.mappings[cand_indices[row][col]] in tmp_indices: # remove duplicate
