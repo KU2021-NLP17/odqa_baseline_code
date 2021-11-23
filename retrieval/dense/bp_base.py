@@ -81,9 +81,8 @@ class BPRetrieval(DenseRetrieval):
             ).to("cuda")
             q_embedding = self.encoder(**q_seqs_val)
             q_embedding.squeeze_()  # in-place
-            q_embedding = q_embedding.cpu().detach().numpy()
             bin_q_emb = self.encoder.convert_to_binary_code(q_embedding).cpu().detach().numpy()
-            q_emb = q_embedding.cpu().detach().numpy() 
+            q_emb = q_embedding.cpu().detach().numpy()
 
         num_queries = q_emb.shape[0] #
         result = np.matmul(bin_q_emb, self.p_embedding.T)   
@@ -139,7 +138,14 @@ class BPRetrieval(DenseRetrieval):
     def _exec_embedding(self):
         p_encoder, q_encoder = self._load_model()
 
-        train_dataset, eval_dataset = self._load_dataset(eval=True)
+        # Load existed train dataset
+        if p.isfile(self.args.data.preprocessed_trainset_dir):
+            with open(self.args.data.preprocessed_trainset_dir, "rb") as f:
+                train_dataset = pickle.load(f)
+                eval_dataset = None
+            
+        else:
+            train_dataset, eval_dataset = self._load_dataset(eval=True)
 
         args = TrainingArguments(
             output_dir="binaryphrase_retrieval",
@@ -241,6 +247,18 @@ class BPRetrieval(DenseRetrieval):
         )
 
         eval_dataset = None
+
+        # Save trian dataset 
+        try:
+            dataset_save_dir = p.join(self.save_dir, f"{time.ctime()}")
+            if not p.exists(dataset_save_dir):
+                os.mkdir(dataset_save_dir)
+
+            with open(p.join(self.save_dir, f"{time.ctime()}", "train_dataset.bin"), "wb") as f:
+                pickle.dump(train_dataset, f)
+            print("Saved train dataset successfully")
+        except:
+            print("Can't save train dataset")
         
         return train_dataset, eval_dataset
 
@@ -295,7 +313,9 @@ class BPRetrieval(DenseRetrieval):
             for step, batch in enumerate(train_dataloader):
                 # Skip epochs to continue learning
                 if epoch < skip_epochs:
-                    optimizer.step()
+                    # p_model.zero_grad()
+                    # q_model.zero_grad()
+                    # optimizer.step()
                     scheduler.step()
                     global_step += 1
                     continue
@@ -377,11 +397,11 @@ class BPRetrieval(DenseRetrieval):
             print(f"Epoch: {epoch + 1:02} | Time: {epoch_mins}m {epoch_secs}s")
             print(f"\tTrain Loss: {train_loss / len(train_dataloader):.4f}")
 
-            if epoch % 5 == 0:
-                print("Save model...")
-                torch.save(p_model.state_dict(), p.join(intmd_save_dir, f"{self.name}-p.pth"))
-                torch.save(q_model.state_dict(), p.join(intmd_save_dir, f"{self.name}-q.pth"))
-                print("Save Success!")
+            # Save passsage and query encoder
+            print("Save model...")
+            torch.save(p_model.state_dict(), p.join(intmd_save_dir, f"{self.name}-p.pth"))
+            torch.save(q_model.state_dict(), p.join(intmd_save_dir, f"{self.name}-q.pth"))
+            print("Save Success!")
 
         p_model.eval()
         q_model.eval()
