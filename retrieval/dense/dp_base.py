@@ -146,7 +146,7 @@ class DPTrainMixin:
             splitted = answer_passage.split()
 
             for phrase_idx in range(len(splitted) // self.window_size * 2):
-                phrase = ' '.join(splitted[phrase_idx*(self.window_size // 2):(phrase_idx+2)*(self.window_size //2)])
+                phrase = ' '.join(splitted[phrase_idx*(self.window_size // 2):(phrase_idx+2)*(self.window_size //2)]) # NOTE: Overlap?
 
                 while True:
                     incorrect_passage = random.choice(train_dataset["context"])
@@ -157,7 +157,7 @@ class DPTrainMixin:
                 incorrect_phrase_indices = random.sample(range(0, len(incorrect_passage_splitted) // self.window_size), self.sample_per_phrase - 1)
                 incorrect_phrases = [' '.join(incorrect_passage_splitted[i*(self.window_size // 2):(i+2)*(self.window_size //2)]) for i in incorrect_phrase_indices]
                 
-                incorrect_phrases.insert(phrase_idx % self.sample_per_phrase, phrase)
+                incorrect_phrases.insert(phrase_idx % self.sample_per_phrase, phrase) 
 
                 questions.append(question)
                 phrases.append(incorrect_phrases)

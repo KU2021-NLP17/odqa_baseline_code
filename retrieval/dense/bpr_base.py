@@ -47,19 +47,19 @@ class BprRetrieval(DenseRetrieval):
             with open(self.embed_path, "rb") as f:
                 self.p_embedding = pickle.load(f)
 
-            emb_size = self.p_embedding.shape[1]
-            self.p_embedding = np.unpackbits(self.p_embedding).reshape(-1, emb_size * 8).astype(np.float32)
-            self.p_embedding= self.p_embedding * 2 - 1  
-
             self.encoder = self._get_encoder()
             self.encoder.load_state_dict(torch.load(self.encoder_path))
         else:
             self.p_embedding, self.encoder = self._exec_embedding()
 
             with open(self.embed_path, "wb") as f:
-                pickle.dump(self.p_embedding, f)
+                pickle.dump(self.p_embedding, f)             
 
             torch.save(self.encoder.state_dict(), self.encoder_path)
+        
+        emb_size = self.p_embedding.shape[1]
+        self.p_embedding = np.unpackbits(self.p_embedding).reshape(-1, emb_size * 8).astype(np.float32)
+        self.p_embedding= self.p_embedding * 2 - 1 
 
     def get_relevant_doc_bulk(self, queries, topk=1):
         self.encoder.eval()  # question encoder
@@ -75,7 +75,6 @@ class BprRetrieval(DenseRetrieval):
             q_emb = q_embedding.cpu().detach().numpy()        
 
         doc_scores, doc_indices = [], []
-
         num_queries = q_emb.shape[0] #
         result = np.matmul(bin_q_emb, self.p_embedding.T)    
         
@@ -83,6 +82,7 @@ class BprRetrieval(DenseRetrieval):
             doc_indices = np.argsort(result, axis=1)[:, -topk:][:, ::-1]
             for i in range(num_queries):
                 doc_scores.append(result[i][[doc_indices[i].tolist()]])
+
             return doc_scores, doc_indices
 
         # 1. Generate binary_k candidates by comparing hq with hp
@@ -91,26 +91,10 @@ class BprRetrieval(DenseRetrieval):
 
         # 2. Choose top k from the candidates by comparing eq with hp
         cand_p_emb = self.p_embedding[cand_indices] # camd_p_emb.shape = [num_quires, binary_k, embedding_size] 
-        scores = np.einsum("ijk,ik->ij", cand_p_emb, q_emb) # [num_quires, binary_k, embedding_size] @ [num_queries, embedding_size, 1] = [num_queries, binary_k, 1]
+        scores = np.einsum("ijk,ik->ij", cand_p_emb, q_emb) # [num_quires, binary_k, embedding_size] @ [num_queries, embedding_size] = [num_queries, binary_k]
         sorted_indices = np.argsort(-scores) # [num_queries, topk]
         doc_scores = scores[np.arange(num_queries)[:, None], sorted_indices][:, :topk] # [num_queries, topk]
         doc_indices = cand_indices[np.arange(num_queries)[:, None], sorted_indices][:, :topk] # [num_queries, topk]
-        
-        # print(doc_scores2.shape, doc_indices2.shape)
-
-        # for queries in range(num_queries):
-        #     cand_p_emb = self.p_embedding[cand_indices[queries]] # [binary_k, embedding_size]
-        #     nth_q_emb = q_emb[queries]
-        #     score = np.dot(cand_p_emb, nth_q_emb)
-        #     tmp_index = np.argsort(-score)[:topk]
-        #     doc_scores.append(score[tmp_index])
-        #     topk_index = cand_indices[queries][tmp_index]
-        #     doc_indices.append(topk_index)
-        
-        # doc_indices = np.array(doc_indices)
-        
-        # import pdb; pdb.set_trace()
-        # print(doc_scores.shape, doc_indices.shape)
 
         return doc_scores, doc_indices
 
@@ -138,8 +122,6 @@ class BprRetrieval(DenseRetrieval):
         p_encoder, q_encoder = self._train(args, train_dataset, p_encoder, q_encoder, eval_dataset, existed_p_dir, existed_q_dir, skip_epochs)
         p_embedding = []
 
-        # passage => phrase
-        # NOTE: need to check
         for passage in tqdm.tqdm(self.contexts):  # wiki
             passage = self.tokenizer( 
                 passage, padding="max_length", truncation=True, max_length=512, return_tensors="pt"
@@ -243,9 +225,9 @@ class BprRetrieval(DenseRetrieval):
 
         torch.cuda.empty_cache()
 
-        save_dir = p.join(self.save_dir, f"{time.ctime()}")
-        if not p.exists(save_dir):
-            os.mkdir(save_dir)
+        intmd_save_dir = p.join(self.intmd_save_dir, f"{time.ctime()}")
+        if not p.exists(intmd_save_dir):
+            os.mkdir(intmd_save_dir)
 
         for epoch in range(training_args.num_train_epochs):
             train_loss = 0.0
@@ -329,8 +311,8 @@ class BprRetrieval(DenseRetrieval):
 
             if epoch % 5 == 0:
                 print("Save model...")
-                torch.save(p_model.state_dict(), p.join(save_dir, f"{self.name}-p.pth"))
-                torch.save(q_model.state_dict(), p.join(save_dir, f"{self.name}-q.pth"))
+                torch.save(p_model.state_dict(), p.join(intmd_save_dir, f"{self.name}-p.pth"))
+                torch.save(q_model.state_dict(), p.join(intmd_save_dir, f"{self.name}-q.pth"))
                 print("Save Success!")
 
             if eval_dataset:
@@ -406,6 +388,11 @@ class BprRetrieval(DenseRetrieval):
             q_model.train()
             p_model.training = True
             q_model.training = True
+
+        p_model.eval()
+        q_model.eval()
+        p_model.training = False
+        q_model.training = False
 
         return p_model, q_model
 

@@ -51,9 +51,6 @@ class BPRetrieval(DenseRetrieval):
             with open(self.embed_path, "rb") as f:
                 self.p_embedding = pickle.load(f)
 
-            emb_size = self.p_embedding.shape[1]
-            self.p_embedding = np.unpackbits(self.p_embedding).reshape(-1, emb_size * 8).astype(np.float32)
-            self.p_embedding= self.p_embedding * 2 - 1
 
             with open(self.mappings_path, "rb") as f:
                 self.mappings = pickle.load(f)
@@ -71,6 +68,10 @@ class BPRetrieval(DenseRetrieval):
 
             torch.save(self.encoder.state_dict(), self.encoder_path)
 
+        emb_size = self.p_embedding.shape[1]
+        self.p_embedding = np.unpackbits(self.p_embedding).reshape(-1, emb_size * 8).astype(np.float32)
+        self.p_embedding = self.p_embedding * 2 - 1
+        
     def get_relevant_doc_bulk(self, queries, topk=1):
         self.encoder.eval()  # question encoder
         self.encoder.cuda()
@@ -85,6 +86,7 @@ class BPRetrieval(DenseRetrieval):
             q_emb = q_embedding.cpu().detach().numpy()
 
         num_queries = q_emb.shape[0] #
+        import pdb; pdb.set_trace()
         result = np.matmul(bin_q_emb, self.p_embedding.T)   
 
         doc_indices, doc_scores = [], []
