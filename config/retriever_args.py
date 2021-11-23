@@ -37,14 +37,8 @@ class RetrievalTrainingArguments:
         default=1, metadata={"help": "덴스 리트리버에서 사용되는 Gradient Accumulation 스텝입니다."}
     )
 
-    existed_p_dir: Optional[str] = field(
-        default="", metadata={"help": "directory to load the existed passage encoder"}
-    )
-    existed_q_dir: Optional[str] = field(
-        default="", metadata={"help": "directory to load the existed question encoder"}
-    )
-    skip_epochs: Optional[int] = field(
-        default=0, metadata={"help": "number of epochs to skip in training"}
+    checkpoint_path: Optional[str] = field(
+        default="", metadata={"help": "path to load the existed training checkpoint"}
     )
     # Params for BPR
     warmup_ratio: Optional[float] = field(default=0.06, metadata={"help": "warmup ratio for scheduler"})

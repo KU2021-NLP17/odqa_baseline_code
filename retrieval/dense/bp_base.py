@@ -1,3 +1,4 @@
+from glob import glob
 from tqdm.auto import tqdm, trange
 import time, os, pickle, random
 import os.path as p
@@ -50,7 +51,6 @@ class BPRetrieval(DenseRetrieval):
         if p.isfile(self.embed_path) and p.isfile(self.encoder_path) and not self.args.retriever.retrain:
             with open(self.embed_path, "rb") as f:
                 self.p_embedding = pickle.load(f)
-
 
             with open(self.mappings_path, "rb") as f:
                 self.mappings = pickle.load(f)
@@ -160,13 +160,9 @@ class BPRetrieval(DenseRetrieval):
             warmup_ratio=self.args.retriever.warmup_ratio,
         )
 
-        existed_p_dir = self.args.retriever.existed_p_dir
-        existed_q_dir = self.args.retriever.existed_q_dir
-        skip_epochs = self.args.retriever.skip_epochs
+        checkpoint_path = self.args.retriever.checkpoint_path
 
-        p_encoder, q_encoder = self._train(
-            args, train_dataset, p_encoder, q_encoder, eval_dataset,  existed_p_dir, existed_q_dir, skip_epochs
-            )
+        p_encoder, q_encoder = self._train(args, train_dataset, p_encoder, q_encoder, eval_dataset, checkpoint_path)
         p_embedding = []
         mappings = []
 
@@ -255,7 +251,7 @@ class BPRetrieval(DenseRetrieval):
             if not p.exists(dataset_save_dir):
                 os.mkdir(dataset_save_dir)
 
-            with open(p.join(self.save_dir, f"{time.ctime()}", "train_dataset.bin"), "wb") as f:
+            with open(p.join(self.save_dir, "train_dataset.bin"), "wb") as f:
                 pickle.dump(train_dataset, f)
             print("Saved train dataset successfully")
         except:
@@ -263,7 +259,7 @@ class BPRetrieval(DenseRetrieval):
         
         return train_dataset, eval_dataset
 
-    def _train(self, training_args, train_dataset, p_model, q_model, eval_dataset, existed_p_dir, existed_q_dir, skip_epochs=0):
+    def _train(self, training_args, train_dataset, p_model, q_model, eval_dataset, checkpoint_path):
         print("TRAINING Binary Phrases Retriever")
         train_sampler = RandomSampler(train_dataset)
         train_dataloader = DataLoader(
@@ -275,12 +271,6 @@ class BPRetrieval(DenseRetrieval):
                 eval_dataset, sampler=eval_sampler, batch_size=training_args.per_device_eval_batch_size
             )
 
-        if existed_p_dir:
-            p_model.load_state_dict(torch.load(existed_p_dir))
-        
-        if existed_q_dir:
-            q_model.load_state_dict(torch.load(existed_p_dir))
-
         optimizer_grouped_parameters = [{"params": p_model.parameters()}, {"params": q_model.parameters()}]
         optimizer = AdamW(optimizer_grouped_parameters, lr=training_args.learning_rate, eps=training_args.adam_epsilon)
 
@@ -291,7 +281,17 @@ class BPRetrieval(DenseRetrieval):
             optimizer, num_warmup_steps=warmup_steps, num_training_steps=t_total
         )
 
-        global_step = 0
+        global_step, start_epoch = 0, 0
+
+        # Load checkpoint
+        if checkpoint_path:
+            checkpoint = torch.load(checkpoint_path)
+            p_model.load_state_dict(checkpoint['p_model_state_dict'])
+            q_model.load_state_dict(checkpoint['q_model_state_dict'])
+            optimizer.load_state_dict(checkpoint['optimizer'])
+            scheduler.load_state_dict(checkpoint['scheduler'])
+            global_step = checkpoint['global_step']
+            start_epoch = checkpoint['epoch'] + 1
 
         p_model.train()
         q_model.train()
@@ -303,24 +303,20 @@ class BPRetrieval(DenseRetrieval):
 
         torch.cuda.empty_cache()
 
+        # Set timezone
+        os.environ['TZ'] = 'Japan'
+        time.tzset()
+        
+        # Make a save folder
         intmd_save_dir = p.join(self.save_dir, f"{time.ctime()}")
         if not p.exists(intmd_save_dir):
             os.mkdir(intmd_save_dir)
 
-        for epoch in range(training_args.num_train_epochs):
+        for epoch in range(start_epoch, training_args.num_train_epochs):
             train_loss = 0.0
             start_time = time.time()
 
-            for step, batch in enumerate(train_dataloader):
-                # Skip epochs to continue learning
-                if epoch < skip_epochs:
-                    # p_model.zero_grad()
-                    # q_model.zero_grad()
-                    # optimizer.step()
-                    scheduler.step()
-                    global_step += 1
-                    continue
-
+            for step, batch in enumerate(tqdm(train_dataloader)):
                 if torch.cuda.is_available():
                     batch = tuple(t.cuda() for t in batch)
 
@@ -372,7 +368,6 @@ class BPRetrieval(DenseRetrieval):
 
                 loss = loss / training_args.gradient_accumulation_steps
 
-                print(f"epoch: {epoch + 1:02} step: {step:02} loss: {loss}", end="\r")
                 train_loss += loss.item()
 
                 loss.backward()
@@ -387,11 +382,6 @@ class BPRetrieval(DenseRetrieval):
                 global_step += 1
                 torch.cuda.empty_cache()
 
-            # Skip epochs to continue learning
-            if epoch < skip_epochs:
-                print(f"skipping {epoch} epoch...")
-                continue
-
             end_time = time.time()
             epoch_mins, epoch_secs = epoch_time(start_time, end_time)
 
@@ -399,10 +389,19 @@ class BPRetrieval(DenseRetrieval):
             print(f"\tTrain Loss: {train_loss / len(train_dataloader):.4f}")
 
             # Save passsage and query encoder
-            print("Save model...")
-            torch.save(p_model.state_dict(), p.join(intmd_save_dir, f"{self.name}-p.pth"))
-            torch.save(q_model.state_dict(), p.join(intmd_save_dir, f"{self.name}-q.pth"))
-            print("Save Success!")
+            print(f"Save a checkpoint in {intmd_save_dir}...")
+            try:
+                torch.save({
+                    'epoch': epoch,
+                    'global_step': global_step,
+                    'p_model_state_dict': p_model.state_dict(),
+                    'q_model_state_dict': q_model.state_dict(),
+                    'optimizer_state_dict': optimizer.state_dict(),
+                    'scheduler_state_dict': scheduler.state_dict()
+                }, p.join(intmd_save_dir, f"{self.name}-checkpoint.tar"))
+                print("Saved Successfully!")
+            except:
+                print("Failed to save the checkpoint")
 
         p_model.eval()
         q_model.eval()
