@@ -284,8 +284,8 @@ class BPRetrieval(DenseRetrieval):
             checkpoint = torch.load(checkpoint_path)
             p_model.load_state_dict(checkpoint['p_model_state_dict'])
             q_model.load_state_dict(checkpoint['q_model_state_dict'])
-            optimizer.load_state_dict(checkpoint['optimizer'])
-            scheduler.load_state_dict(checkpoint['scheduler'])
+            optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+            scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
             global_step = checkpoint['global_step']
             start_epoch = checkpoint['epoch'] + 1
             print("Loaded the checkpoint successfully!")
