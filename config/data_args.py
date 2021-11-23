@@ -57,3 +57,10 @@ class DataTrainingArguments:
             "and end predictions are not conditioned on one another."
         },
     )
+
+    preprocessed_trainset_dir: str = field(
+        default="",
+        metadata={
+            "help": "Load preprocessed train set"
+        }
+    )
